@@ -303,7 +303,7 @@ llama_memory_hybrid_idx_context::llama_memory_hybrid_idx_context(
                 slot_info_vec_t   sinfos_idx,
       std::vector<llama_ubatch>   ubatches) :
     // note: the base copies the ubatches; ctx_idx gets a copy of its own
-    llama_memory_hybrid_context(mem, std::move(sinfos_attn), ubatches),
+    llama_memory_hybrid_context(mem, std::move(sinfos_attn), std::move(sinfos_idx), ubatches),
     mem(mem),
     ns_ubatch(llama_memory_hybrid_idx_ns(sinfos_idx)),
     ctx_idx(mem->get_mem_idx() == nullptr ? nullptr :
