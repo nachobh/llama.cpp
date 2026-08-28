@@ -164,13 +164,18 @@ llama_model_qwen35::graph::graph(const llama_model & model, const llm_graph_para
         cur = build_norm(inpL, model.layers[il].attn_norm, nullptr, LLM_NORM_RMS, il);
         cb(cur, "attn_norm", il);
 
-        ggml_build_forward_expand(gf, cur);
-
         // Determine layer type and build appropriate attention mechanism
         if (hparams.is_recr(il)) {
             // Linear attention layer (gated delta net)
             cur = build_layer_attn_linear(inp->get_recr(), cur, il);
+
+            // build_layer_attn_linear() adds the GDN state cache writes as sink nodes. Close the
+            // branch only after they exist, or they order against the wrong node set and can race
+            // with the state reads of the next token or layer.
+            ggml_build_forward_expand(gf, cur);
         } else {
+            ggml_build_forward_expand(gf, cur);
+
             // Full attention layer
             cur = build_layer_attn(inp->get_attn(), cur, inp_pos, sections, il);
         }
@@ -456,16 +461,18 @@ ggml_tensor * llama_model_qwen35::graph::build_layer_attn_linear(
     // Apply gated normalization: self.norm(core_attn_out, z)
     ggml_tensor * attn_out_norm = build_norm_gated(output, model.layers[il].ssm_norm, z_2d, il);
 
-    // Final reshape: [head_dim, n_heads, n_tokens, n_seqs] -> [n_tokens, n_seqs, n_heads * head_dim]
-    ggml_tensor * final_output = ggml_reshape_3d(ctx0, attn_out_norm, head_v_dim * num_v_heads, n_seq_tokens, n_seqs);
+    // Final reshape: [head_dim, n_heads, n_tokens, n_seqs] -> [n_heads * head_dim, n_tokens * n_seqs]
+    // Flattened to 2D before the projection rather than after it: keeping the
+    // token and sequence axes separate makes src1 [D, n_seq_tokens, n_seqs], which
+    // the backends dispatch as n_seqs independent n=n_seq_tokens mat-vecs over the
+    // same weight. During batched decode (n_seq_tokens == 1, n_seqs == batch) that
+    // is one GEMV per sequence instead of a single batch-wide one.
+    ggml_tensor * final_output = ggml_reshape_2d(ctx0, attn_out_norm, head_v_dim * num_v_heads, n_seq_tokens * n_seqs);
     cb(final_output, "final_output", il);
 
-    // Output projection
+    // Output projection - already [n_embd, n_seq_tokens * n_seqs]
     cur = build_lora_mm(model.layers[il].ssm_out, final_output, model.layers[il].ssm_out_s);
     cb(cur, "linear_attn_out", il);
-
-    // Reshape back to original dimensions
-    cur = ggml_reshape_2d(ctx0, cur, n_embd, n_seq_tokens * n_seqs);
 
     return cur;
 }
