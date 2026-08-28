@@ -43,9 +43,21 @@ Passed:
 - `test-llama-archs`
 - `llama-server --list-devices` (reports no devices in this container)
 
-The requested HIP configuration was created in `build-rocm10-gfx1151` but
-configuration stopped because `/opt/rocm-10.0.0/llvm/bin/clang++` does not
-exist and CMake could not find a ROCm root. No HIP binary was produced.
+The ROCm 10 HIP build completed in
+`build-rocm10-gfx1150-gfx1151` with:
+
+```text
+GGML_HIP=ON
+GPU_TARGETS=gfx1150;gfx1151
+CMAKE_HIP_COMPILER=/opt/rocm/core-10.0/llvm/bin/clang++
+LLAMA_BUILD_SERVER=ON
+BUILD_SHARED_LIBS=ON
+```
+
+`llama-server` and `test-llama-archs` were built successfully. `ldd` confirms
+that the HIP, hipBLAS, rocBLAS, HSA and ROCm libraries resolve from
+`/opt/rocm/core-10.0`. Runtime GPU execution was not repeated inside the
+restricted build environment.
 
 The UI asset download was unavailable due to DNS, so the CPU server was built
 without embedded UI assets.
