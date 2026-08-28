@@ -218,6 +218,7 @@ struct ggml_cuda_mmq_config {
 #include "mmq-config-ampere.cuh"
 #include "mmq-config-blackwell.cuh"
 
+#include "mmq-config-gcn.cuh"
 #include "mmq-config-cdna.cuh"
 #include "mmq-config-rdna2.cuh"
 #include "mmq-config-rdna3.cuh"
@@ -228,6 +229,9 @@ struct ggml_cuda_mmq_config {
 
 static __host__ ggml_cuda_mmq_config ggml_cuda_mmq_get_config(const ggml_type type, const int J, const bool fallback, const int cc) {
     if (GGML_CUDA_CC_IS_AMD(cc)) {
+        if (GGML_CUDA_CC_IS_GCN(cc)) {
+            return ggml_cuda_mmq_get_config_gcn(type, J, fallback);
+        }
         if (GGML_CUDA_CC_IS_CDNA(cc)) {
             return ggml_cuda_mmq_get_config_cdna(type, J, fallback);
         }
@@ -256,7 +260,9 @@ static __host__ ggml_cuda_mmq_config ggml_cuda_mmq_get_config(const ggml_type ty
 
 static constexpr __device__ ggml_cuda_mmq_config ggml_cuda_mmq_get_config(ggml_type type, int J, bool fallback) {
 #ifdef GGML_USE_HIP
-#ifdef CDNA
+#ifdef GCN
+    return ggml_cuda_mmq_get_config_gcn(type, J, fallback);
+#elif defined(CDNA)
     return ggml_cuda_mmq_get_config_cdna(type, J, fallback);
 #elif defined(RDNA4)
     return ggml_cuda_mmq_get_config_rdna4(type, J, fallback);
@@ -1472,10 +1478,49 @@ static void launch_mul_mat_q(ggml_backend_cuda_context & ctx, const mmq_args & a
          ntx_fd);
 }
 
+// Return true when switching between the checked and unchecked kernels changes
+// only the bounds-check specialization, not the actual MMQ configuration.
+static bool mmq_same_kernel_config(const ggml_cuda_mmq_config & checked, const ggml_cuda_mmq_config & unchecked) {
+    return checked.type        == unchecked.type
+        && checked.nthreads    == unchecked.nthreads
+        && checked.occupancy   == unchecked.occupancy
+        && checked.I           == unchecked.I
+        && checked.J           == unchecked.J
+        && checked.sram_layout == unchecked.sram_layout
+        && checked.K_vram      == unchecked.K_vram
+        && checked.stream_k    == unchecked.stream_k;
+}
+
+template <ggml_type type, int J, bool fallback>
+static void launch_mul_mat_q_adaptive(ggml_backend_cuda_context & ctx, const mmq_args & args, cudaStream_t stream) {
+    if constexpr (!fallback) {
+        launch_mul_mat_q<type, J, false>(ctx, args, stream);
+    } else {
+        const int id = ggml_cuda_get_device();
+        const int cc = ggml_cuda_info().devices[id].cc;
+
+        const ggml_cuda_mmq_config checked   = ggml_cuda_mmq_get_config(type, J, true,  cc);
+        const ggml_cuda_mmq_config unchecked = ggml_cuda_mmq_get_config(type, J, false, cc);
+
+        // The original % 128 test is conservative. If the selected tile height
+        // divides nrows_x exactly, the last I tile is complete and the checked
+        // specialization is unnecessary. Requiring identical configurations
+        // keeps this optimization from changing tiling, occupancy, or stream-k.
+        const bool can_skip_bounds_check = unchecked.type != GGML_TYPE_COUNT && mmq_same_kernel_config(checked, unchecked) && args.nrows_x % unchecked.I == 0;
+
+        if (can_skip_bounds_check) {
+            launch_mul_mat_q<type, J, false>(ctx, args, stream);
+        } else {
+            launch_mul_mat_q<type, J, true>(ctx, args, stream);
+        }
+    }
+}
+
 template <ggml_type type, bool fallback>
 void mul_mat_q_switch_J(ggml_backend_cuda_context & ctx, const mmq_args & args, cudaStream_t stream) {
     const int    id    = ggml_cuda_get_device();
     const int    cc    = ggml_cuda_info().devices[id].cc;
+    const int    nsm   = ggml_cuda_info().devices[id].nsm;
     const size_t smpbo = ggml_cuda_info().devices[id].smpbo;
 
     int J_best        = 0;
@@ -1493,6 +1538,24 @@ void mul_mat_q_switch_J(ggml_backend_cuda_context & ctx, const mmq_args & args, 
 
         const int ntiles_x = (args.ncols_max + config.J - 1) / config.J;
 
+        // Wide GCN tiles are useful only if the local grid can
+        // provide at least one workgroup per CU.
+        if (GGML_CUDA_CC_IS_GCN(cc) && config.J > 64) {
+            // MoE uses small per-expert grids that are overestimated
+            // by the global dimensions. Keep J <= 64 for this path.
+            if (args.ids_dst != nullptr) {
+                continue;
+            }
+
+            const int64_t ntiles_y = (args.nrows_x + config.I - 1) / config.I;
+
+            const int64_t total_tiles = ntiles_y * int64_t(ntiles_x) * args.nchannels_y * args.nsamples_y;
+
+            if (total_tiles < int64_t(nsm)) {
+                continue;
+            }
+        }
+
         if (ntiles_x < ntiles_J_best) {
             J_best = J;
             ntiles_J_best = ntiles_x;
@@ -1501,52 +1564,52 @@ void mul_mat_q_switch_J(ggml_backend_cuda_context & ctx, const mmq_args & args, 
 
     switch (J_best) {
         case   8:
-            launch_mul_mat_q<type,   8, fallback>(ctx, args, stream);
+            launch_mul_mat_q_adaptive<type,   8, fallback>(ctx, args, stream);
             break;
         case  16:
-            launch_mul_mat_q<type,  16, fallback>(ctx, args, stream);
+            launch_mul_mat_q_adaptive<type,  16, fallback>(ctx, args, stream);
             break;
         case  24:
-            launch_mul_mat_q<type,  24, fallback>(ctx, args, stream);
+            launch_mul_mat_q_adaptive<type,  24, fallback>(ctx, args, stream);
             break;
         case  32:
-            launch_mul_mat_q<type,  32, fallback>(ctx, args, stream);
+            launch_mul_mat_q_adaptive<type,  32, fallback>(ctx, args, stream);
             break;
         case  40:
-            launch_mul_mat_q<type,  40, fallback>(ctx, args, stream);
+            launch_mul_mat_q_adaptive<type,  40, fallback>(ctx, args, stream);
             break;
         case  48:
-            launch_mul_mat_q<type,  48, fallback>(ctx, args, stream);
+            launch_mul_mat_q_adaptive<type,  48, fallback>(ctx, args, stream);
             break;
         case  56:
-            launch_mul_mat_q<type,  56, fallback>(ctx, args, stream);
+            launch_mul_mat_q_adaptive<type,  56, fallback>(ctx, args, stream);
             break;
         case  64:
-            launch_mul_mat_q<type,  64, fallback>(ctx, args, stream);
+            launch_mul_mat_q_adaptive<type,  64, fallback>(ctx, args, stream);
             break;
         case  72:
-            launch_mul_mat_q<type,  72, fallback>(ctx, args, stream);
+            launch_mul_mat_q_adaptive<type,  72, fallback>(ctx, args, stream);
             break;
         case  80:
-            launch_mul_mat_q<type,  80, fallback>(ctx, args, stream);
+            launch_mul_mat_q_adaptive<type,  80, fallback>(ctx, args, stream);
             break;
         case  88:
-            launch_mul_mat_q<type,  88, fallback>(ctx, args, stream);
+            launch_mul_mat_q_adaptive<type,  88, fallback>(ctx, args, stream);
             break;
         case  96:
-            launch_mul_mat_q<type,  96, fallback>(ctx, args, stream);
+            launch_mul_mat_q_adaptive<type,  96, fallback>(ctx, args, stream);
             break;
         case 104:
-            launch_mul_mat_q<type, 104, fallback>(ctx, args, stream);
+            launch_mul_mat_q_adaptive<type, 104, fallback>(ctx, args, stream);
             break;
         case 112:
-            launch_mul_mat_q<type, 112, fallback>(ctx, args, stream);
+            launch_mul_mat_q_adaptive<type, 112, fallback>(ctx, args, stream);
             break;
         case 120:
-            launch_mul_mat_q<type, 120, fallback>(ctx, args, stream);
+            launch_mul_mat_q_adaptive<type, 120, fallback>(ctx, args, stream);
             break;
         case 128:
-            launch_mul_mat_q<type, 128, fallback>(ctx, args, stream);
+            launch_mul_mat_q_adaptive<type, 128, fallback>(ctx, args, stream);
             break;
         default:
             fprintf(stderr, "J_best=%d\n", J_best);
