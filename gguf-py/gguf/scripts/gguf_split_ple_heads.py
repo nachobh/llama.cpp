@@ -59,7 +59,7 @@ def split(readers: list[gguf.GGUFReader], writer: gguf.GGUFWriter) -> None:
     for t in tensors:
         if t.name == JOINED:
             for h, (o, v) in enumerate(zip(offs, vocs)):
-                name = gguf.TENSOR_NAMES[gguf.MODEL_TENSOR.PLE_NGRAM_EMBD].format(bid=h) + ".weight"
+                name = f"ple_ngram_embd.{h}.weight"  # matches LLM_TENSOR_PLE_NGRAM_EMBD "ple_ngram_embd.%d" in src/llama-arch.cpp
                 data = t.data[o:o + v]
                 logger.info(f"{name}: rows {o}..{o + v} ({data.nbytes / 2**30:.2f} GiB)")
                 plan.append((name, data, t.tensor_type))

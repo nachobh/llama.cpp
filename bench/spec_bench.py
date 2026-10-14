@@ -209,7 +209,7 @@ def main():
     ctx = args.ctx or max(8192, max(depths) + args.n_predict + 4096)
     out = pathlib.Path(args.out) if args.out else HERE / f"results-spec-{args.preset}.jsonl"
 
-    for path in [SERVER, cfg["target"]] + ([cfg["draft"]] if cfg["draft"] else []):
+    for path in [p for p in (SERVER, cfg["target"], cfg["draft"]) if p]:
         if not pathlib.Path(path).exists():
             sys.exit(f"missing: {path}")
 
@@ -261,8 +261,8 @@ def main():
                                     "build": args.build, "build_commit": build_commit,
                                     "workload": workload, "depth": depth, "power": power,
                                     "gpu_temp_c": int(temp) // 1000 if temp.isdigit() else None,
-                                    "target": cfg["target"].name, "target_quant": cfg["target_quant"],
-                                    "draft": (cfg["draft"].name if cfg["draft"] else "(target nextn)") if use_draft else None,
+                                    "target": pathlib.Path(cfg["target"]).name if cfg["target"] else None, "target_quant": cfg["target_quant"],
+                                    "draft": (pathlib.Path(cfg["draft"]).name if cfg["draft"] else "(target nextn)") if use_draft else None,
                                     "draft_quant": cfg["draft_quant"] if use_draft else None,
                                     "spec_method": cfg["method"] if use_draft else "none",
                                     "prompt_n": t.get("prompt_n"),

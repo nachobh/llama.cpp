@@ -157,7 +157,7 @@ def main():
     # 1. gate ablations, biggest first
     gate_items = sorted(({"lbl": f'{r["gate"]} · {r["quant"]}', "v": r["delta_pct"],
                           "note": r["model"]} for r in gates),
-                        key=lambda d: -d["v"])
+                        key=lambda d: -float(d["v"]))
     parts.append(bar_chart(
         "Vulkan gate ablations",
         "pp2048 at ubatch 2048, each gate on vs off in one binary. Three models, three quant families.",
