@@ -6,7 +6,7 @@ export const ATTACHMENT_SAVED_REGEX = /\[Attachment saved: ([^\]]+)\]/;
 // plain text (`[Attachment saved: ...]`), not an array literal. Require the
 // first array value (or the closing bracket for an empty array) to look like
 // a valid JSON token before attempting JSON.parse.
-export const TOOL_RESULT_JSON_OPEN_REGEX = /^(?:\{|\[\s*(?:[\]"{\-0-9]|true|false|null))/;
+export const TOOL_RESULT_JSON_OPEN_REGEX = /^(?:\{|\[\s*(?:[[\]"{\-0-9]|true|false|null))/;
 
 // Search-summary wire format used by file-glob and grep tools:
 //   <matches>
@@ -22,6 +22,10 @@ export const SEARCH_SUMMARY = {
 // so the whole " - " sits on one visual line even when the surrounding text
 // wraps mid-paragraph.
 export const RESULT_STAT_SEPARATOR = ' - ';
+
+// Separator between the assistant text sections of a grouped agentic
+// session when they are joined for the clipboard.
+export const AGENTIC_TEXT_COPY_SEPARATOR = '\n\n';
 
 export const DEFAULT_AGENTIC_CONFIG: AgenticConfig = {
 	enabled: true,
