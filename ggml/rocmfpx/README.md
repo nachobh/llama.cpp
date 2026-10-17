@@ -35,9 +35,12 @@ Current status (June 16, 2026):
 - CPU reference quantize/dequantize exists for all three formats.
 - `Q3_0_ROCMFPX`, `Q6_0_ROCMFPX`, and `Q8_0_ROCMFPX` are registered as
   experimental GGUF tensor types.
-- ROCm/HIP and Vulkan kernels support `CPY`, `GET_ROWS`, `SET_ROWS`, and
-  `MUL_MAT`/`MUL_MAT_ID` for all three formats.
-- Qwen3-0.6B BF16 smoke tests pass on CPU, ROCm0, and Vulkan0.
+- Vulkan kernels support `CPY`, `GET_ROWS`, `SET_ROWS`, and
+  `MUL_MAT`/`MUL_MAT_ID` for all three formats. On ROCm/HIP the formats are
+  registered and standalone dequant helpers exist (`ggml/rocmfp4/rocmfp4_hip.cu`),
+  but full backend op integration (support predicates + dispatch) is NOT yet
+  done; HIP currently serves these tensors via fallback paths.
+- Qwen3-0.6B BF16 smoke tests pass on CPU and Vulkan0.
 - Generic baseline quant presets now include lean coherency routing. These
   preset names are not release recipe identities; released artifact mappings
   and architecture-qualified recipe IDs live in
